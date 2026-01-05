@@ -1,0 +1,1 @@
+# Lägg in hela sensor-koden här (ChargeampsSensor, TotalEnergy, PowerSensor)
