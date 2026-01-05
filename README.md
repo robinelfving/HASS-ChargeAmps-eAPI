@@ -17,7 +17,7 @@ It provides real-time data from your ChargeAmps chargers, including status, powe
 
 ## Installation
 
-### HACS (recommended)
+### HACS (recommended) (Not yet published)
 
 1. Add this repository as a **Custom Repository** in HACS (type: Integration).
 2. Install the ChargeAmps eAPI integration.
