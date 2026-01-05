@@ -1,9 +1,9 @@
 {
   "domain": "chargeamps",
   "name": "ChargeAmps",
-  "version": "1.0.0",
-  "documentation": "https://github.com/kirei/hass-chargeamps",
+  "version": "0.0.1",
+  "documentation": "https://github.com/robinelfving/hass-chargeamps",
   "requirements": ["aiohttp", "dataclasses-json", "PyJWT"],
   "dependencies": [],
-  "codeowners": ["@yourgithubname"]
+  "codeowners": ["@robinelfving"]
 }
