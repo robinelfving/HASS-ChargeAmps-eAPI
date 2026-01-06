@@ -1,120 +1,161 @@
-"""ChargeAmps API Client"""
+from __future__ import annotations
+
+import asyncio
 import logging
-import time
-from dataclasses import dataclass
-from datetime import datetime
-from urllib.parse import urljoin
+from typing import Any
 
-import jwt
-from aiohttp import ClientResponse, ClientSession
-from aiohttp.web import HTTPException
-from dataclasses_json import LetterCase, dataclass_json
+import async_timeout
+from aiohttp import ClientSession, ClientResponseError
 
-from .const import DOMAIN
+from .const import (
+    API_BASE_URL,
+    API_LOGIN_PATH,
+    API_REFRESH_PATH,
+    API_CHARGEPOINTS_OWNED_PATH,
+    API_CHARGEPOINT_PATH,
+    REQUEST_TIMEOUT,
+)
 
-API_BASE_URL = "https://eapi.charge.space"
-API_VERSION = "v5"
+_LOGGER = logging.getLogger(__name__)
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargePointConnector:
-    charge_point_id: str
-    connector_id: int
-    type: str
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargePoint:
-    id: str
-    name: str
-    password: str
-    type: str
-    is_loadbalanced: bool
-    firmware_version: str | None
-    hardware_version: str | None
-    connectors: list[ChargePointConnector]
+class ChargeAmpsApiError(Exception):
+    """Base exception for Charge Amps API errors."""
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargePointMeasurement:
-    phase: str
-    current: float
-    voltage: float
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargePointConnectorStatus:
-    charge_point_id: str
-    connector_id: int
-    total_consumption_kwh: float
-    status: str
-    measurements: list[ChargePointMeasurement] | None
-    start_time: datetime | None = None
-    end_time: datetime | None = None
-    session_id: str | None = None
+class ChargeAmpsAuthError(ChargeAmpsApiError):
+    """Authentication failed."""
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargePointStatus:
-    id: str
-    status: str
-    connector_statuses: list[ChargePointConnectorStatus]
 
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=False)
-class ChargePointSettings:
-    id: str
-    dimmer: str
-    down_light: bool | None = None
-
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=False)
-class ChargePointConnectorSettings:
-    charge_point_id: str
-    connector_id: int
-    mode: str
-    rfid_lock: bool
-    cable_lock: bool
-    max_current: float | None = None
-
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ChargingSession:
-    id: str
-    charge_point_id: str
-    connector_id: int
-    session_type: str
-    total_consumption_kwh: float
-    start_time: datetime | None = None
-    end_time: datetime | None = None
-
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class StartAuth:
-    rfid_length: int
-    rfid_format: str
-    rfid: str
-    external_transaction_id: str
-
-class ChargeAmpsClient:
-    def __init__(self, email: str, password: str, api_key: str, api_base_url: str | None = None):
-        self._logger = logging.getLogger(__name__).getChild(self.__class__.__name__)
+class ChargeAmpsApi:
+    def __init__(
+        self,
+        session: ClientSession,
+        email: str,
+        password: str,
+    ) -> None:
+        self._session = session
         self._email = email
         self._password = password
-        self._api_key = api_key
-        self._session = ClientSession(raise_for_status=True)
-        self._headers = {}
-        self._base_url = api_base_url or API_BASE_URL
-        self._ssl = False
-        self._token = None
-        self._token_expire = 0
-        self._refresh_token = None
 
-    async def shutdown(self) -> None:
-        await self._session.close()
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._auth_lock = asyncio.Lock()
 
-    async def _ensure_token(self) -> None:
-        if self._token_expire > time.time():
+    # ---------------------------------------------------------------------
+    # Authentication
+    # ---------------------------------------------------------------------
+
+    async def _login(self) -> None:
+        _LOGGER.debug("Charge Amps: logging in")
+        try:
+            async with async_timeout.timeout(REQUEST_TIMEOUT):
+                resp = await self._session.post(
+                    f"{API_BASE_URL}{API_LOGIN_PATH}",
+                    json={"email": self._email, "password": self._password},
+                )
+                resp.raise_for_status()
+                data = await resp.json()
+        except ClientResponseError as err:
+            raise ChargeAmpsAuthError(f"Login failed ({err.status})") from err
+        except Exception as err:
+            raise ChargeAmpsAuthError("Login request failed") from err
+
+        self._access_token = data["token"]
+        self._refresh_token = data.get("refreshToken")
+        _LOGGER.debug("Charge Amps: login successful")
+
+    async def _refresh(self) -> None:
+        if not self._refresh_token:
+            await self._login()
             return
-        self._logger.info("Refreshing token or logging in…")
-        # Här kommer login/refresh logik
+        _LOGGER.debug("Charge Amps: refreshing token")
+        try:
+            async with async_timeout.timeout(REQUEST_TIMEOUT):
+                resp = await self._session.post(
+                    f"{API_BASE_URL}{API_REFRESH_PATH}",
+                    json={"refreshToken": self._refresh_token},
+                )
+                resp.raise_for_status()
+                data = await resp.json()
+        except ClientResponseError:
+            _LOGGER.warning("Charge Amps: refresh failed, re-authenticating")
+            await self._login()
+            return
+        except Exception as err:
+            raise ChargeAmpsAuthError("Token refresh failed") from err
+
+        self._access_token = data["token"]
+        self._refresh_token = data.get("refreshToken", self._refresh_token)
+        _LOGGER.debug("Charge Amps: token refreshed")
+
+    async def _headers(self) -> dict[str, str]:
+        async with self._auth_lock:
+            if not self._access_token:
+                await self._login()
+        return {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+    # ---------------------------------------------------------------------
+    # Generic request helper
+    # ---------------------------------------------------------------------
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        retry: bool = True,
+    ) -> Any:
+        url = f"{API_BASE_URL}{path}"
+        try:
+            async with async_timeout.timeout(REQUEST_TIMEOUT):
+                resp = await self._session.request(
+                    method, url, headers=await self._headers(), json=json, params=params
+                )
+                if resp.status == 401 and retry:
+                    _LOGGER.debug("Charge Amps: 401 received, refreshing token")
+                    async with self._auth_lock:
+                        await self._refresh()
+                    return await self._request(method, path, json=json, params=params, retry=False)
+                resp.raise_for_status()
+                return await resp.json()
+        except ClientResponseError as err:
+            _LOGGER.error("Charge Amps API error %s on %s %s", err.status, method, path)
+            raise ChargeAmpsApiError(err) from err
+        except Exception as err:
+            raise ChargeAmpsApiError("Request failed") from err
+
+    # ---------------------------------------------------------------------
+    # Public GET endpoints
+    # ---------------------------------------------------------------------
+
+    async def get_chargepoints(self) -> list[dict[str, Any]]:
+        return await self._request("GET", API_CHARGEPOINTS_OWNED_PATH)
+
+    async def get_chargepoint(self, chargepoint_id: str) -> dict[str, Any]:
+        return await self._request("GET", API_CHARGEPOINT_PATH.format(chargepoint_id=chargepoint_id))
+
+    # ---------------------------------------------------------------------
+    # Public PUT endpoints (styrning)
+    # ---------------------------------------------------------------------
+
+    async def set_connector_mode(
+        self, chargepoint_id: str, connector_id: int, mode: str
+    ) -> dict[str, Any]:
+        """Set mode of a connector (Off, Charging, etc)."""
+        path = f"/chargepoints/{chargepoint_id}/connectors/{connector_id}/settings"
+        payload = {"mode": mode}
+        return await self._request("PUT", path, json=payload)
+
+    async def set_connector_max_current(
+        self, chargepoint_id: str, connector_id: int, max_current: int
+    ) -> dict[str, Any]:
+        """Set max current on a connector."""
+        path = f"/chargepoints/{chargepoint_id}/connectors/{connector_id}/settings"
+        payload = {"maxCurrent": max_current}
+        return await self._request("PUT", path, json=payload)

@@ -3,7 +3,8 @@
   "name": "ChargeAmps",
   "version": "0.0.1",
   "documentation": "https://github.com/robinelfving/hass-chargeamps",
-  "requirements": ["aiohttp", "dataclasses-json", "PyJWT"],
+  "requirements": ["aiohttp"],
   "dependencies": [],
-  "codeowners": ["@robinelfving"]
+  "codeowners": ["@robinelfving"],
+  "config_flow": true
 }

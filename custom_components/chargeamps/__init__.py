@@ -1,34 +1,33 @@
-"""Init för Charge Amps custom component."""
-import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from .api import ChargeAmpsClient
-from .handler import ChargeAmpsHandler
-from .coordinator import ChargeAmpsCoordinator
-from .const import DOMAIN, DOMAIN_DATA, PLATFORMS
 
-_LOGGER = logging.getLogger(__name__)
+from .api import ChargeAmpsApi
+from .coordinator import ChargeAmpsDataUpdateCoordinator
+from .const import DOMAIN, PLATFORMS
 
-async def async_setup(hass: HomeAssistant, config: dict):
-    return True
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Charge Amps from a config entry."""
+    email = entry.data.get("email")
+    password = entry.data.get("password")
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    email = entry.data["email"]
-    password = entry.data["password"]
-    api_key = entry.data["api_key"]
-
-    client = ChargeAmpsClient(email=email, password=password, api_key=api_key)
-    handler = ChargeAmpsHandler(client)
-    coordinator = ChargeAmpsCoordinator(hass, handler)
-
-    hass.data.setdefault(DOMAIN_DATA, {})
-    hass.data[DOMAIN_DATA]["handler"] = handler
-    hass.data[DOMAIN_DATA]["coordinator"] = coordinator
-
-    for platform in PLATFORMS:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, platform)
-        )
-
+    api = ChargeAmpsApi(
+        session=hass.helpers.aiohttp_client.async_get_clientsession(),
+        email=email,
+        password=password
+    )
+    coordinator = ChargeAmpsDataUpdateCoordinator(hass, api)
     await coordinator.async_config_entry_first_refresh()
+
+    # Spara coordinator för entiteter
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    # Initiera plattformar
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+    return unload_ok
