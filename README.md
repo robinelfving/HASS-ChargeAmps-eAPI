@@ -13,7 +13,7 @@ It provides real-time data from your ChargeAmps chargers, including status, powe
   - Set maximum current
   - Lock/unlock charging cable
   - Control LED lights on the charge point
-- Compatible with **Luna** and **Halo** chargers.
+- Compatible with at least **Luna** chargers.
 
 ## Installation
 
@@ -28,19 +28,3 @@ It provides real-time data from your ChargeAmps chargers, including status, powe
 1. Download the `chargeamps` folder from this repository.
 2. Place it in your Home Assistant `custom_components/` directory.
 3. Restart Home Assistant.
-
-## Configuration
-
-Add the following to your `configuration.yaml`:
-
-```yaml
-chargeamps:
-  username: "YOUR_EMAIL"
-  password: "YOUR_PASSWORD"
-  api_key: "YOUR_API_KEY"
-  url: "https://eapi.charge.space"  # optional if default
-  scan_interval: 30  # optional, in seconds
-  readonly: false
-  chargepoints:
-    - "CP_ID_1"
-    - "CP_ID_2"
